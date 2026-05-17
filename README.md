@@ -7,11 +7,16 @@
 DDC では、各関数の `Read` / `Write` / `Call` / `Throw` セクションに依存パスを明示的に宣言します。宣言されていないパスへのアクセスはコンパイル時に禁止されるため、依存関係が常にコードに明文化された状態を保てます。
 
 ```ddc
-fn process_order(ctx: &AppCtx) {
-    Read: ctx.order.id, ctx.user.name
-    Write: ctx.order.status
-    Call: notify_user
-} {
+void process_order(AppCtx ctx)
+(
+    Read:
+        ctx.order.id,
+        ctx.user.name
+    Write:
+        ctx.order.status
+    Call:
+        notify_user()
+) {
     // Rust 実装本体
 }
 ```
