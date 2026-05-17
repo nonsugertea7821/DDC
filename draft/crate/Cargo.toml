@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "ddc-syntax",
+    "ddc-core",
+    "ddc-codegen",
+    "ddc-build",
+]
+resolver = "2"

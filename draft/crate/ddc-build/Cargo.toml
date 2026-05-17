@@ -1,0 +1,11 @@
+[package]
+name = "ddc-build"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ddc-syntax  = { path = "../ddc-syntax" }
+ddc-core    = { path = "../ddc-core" }
+ddc-codegen = { path = "../ddc-codegen" }
+syn         = { version = "2", features = ["full", "visit"] }
+proc-macro2 = "1"

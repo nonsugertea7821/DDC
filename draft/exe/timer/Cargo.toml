@@ -1,0 +1,11 @@
+[package]
+name = "timer"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "timer"
+path = "src/main.rs"
+
+[build-dependencies]
+ddc-build = { path = "../../crate/ddc-build" }

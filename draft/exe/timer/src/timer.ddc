@@ -1,0 +1,76 @@
+// SimpleAlarmService 実装型 (passthrough)
+struct SimpleAlarmService;
+
+// ─── Timer 操作 ─────────────────────────────────────────────────────────────
+
+Timer new_timer()
+(Write: ::Timer.elapsed_ms)
+{ Timer { elapsed_ms: 0 } }
+
+readonly u64 elapsed_ms(Timer timer)
+(Read: timer.elapsed_ms)
+{ timer.elapsed_ms }
+
+Timer tick(Timer timer)
+(
+    Read: timer.elapsed_ms,
+    Write: ::Timer.elapsed_ms
+)
+{ Timer { elapsed_ms: timer.elapsed_ms + 1, ..timer } }
+
+Timer reset_timer(Timer timer)
+(Write: ::Timer.elapsed_ms)
+{ Timer { elapsed_ms: 0 } }
+
+// ─── Alarm 操作 ─────────────────────────────────────────────────────────────
+
+Alarm new_alarm(String label, u64 threshold_ms)
+(Write: ::Alarm.label, ::Alarm.threshold_ms, ::Alarm.fired)
+{ Alarm { label, threshold_ms, fired: false } }
+
+// 3 階層呼び出し連鎖: check_alarm → is_expired → elapsed_ms
+readonly bool is_expired(Timer timer, Alarm alarm)
+(
+    Read: timer.elapsed_ms, alarm.threshold_ms,
+    Call: elapsed_ms
+)
+{ elapsed_ms(timer) >= alarm.threshold_ms }
+
+Alarm trigger_alarm(Alarm alarm)
+(Write: ::Alarm.fired)
+{ Alarm { fired: true, ..alarm } }
+
+Alarm reset_alarm(Alarm alarm)
+(Write: ::Alarm.fired)
+{ Alarm { fired: false, ..alarm } }
+
+Alarm check_alarm(Timer timer, Alarm alarm)
+(
+    Read: timer.elapsed_ms, alarm.threshold_ms, alarm.fired,
+    Call: is_expired, trigger_alarm
+)
+{
+    if is_expired(timer, alarm.clone()) && !alarm.fired {
+        trigger_alarm(alarm)
+    } else {
+        alarm
+    }
+}
+
+// ─── エイリアスデモ ──────────────────────────────────────────────────────────
+
+readonly String alarm_label(Alarm alarm)
+(Read: alarm.label as label)
+{ label().clone() }
+
+// ─── Contract / Impl ─────────────────────────────────────────────────────────
+
+contract IAlarmService {
+    bool check(Timer timer, Alarm alarm)
+    (Read: timer.elapsed_ms, Read: alarm.threshold_ms)
+}
+
+class SimpleAlarmService : IAlarmService {
+    bool check(Timer timer, Alarm alarm) : IAlarmService.check
+    { timer.elapsed_ms >= alarm.threshold_ms }
+}

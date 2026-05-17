@@ -1,0 +1,7 @@
+[package]
+name = "ddc-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ddc-syntax = { path = "../ddc-syntax" }
