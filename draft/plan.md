@@ -15,7 +15,7 @@ Tech-onRust.md §8.3 のロードマップに基づく実施計画。
                            ↓ フェーズ 1〜4 完了後
                   フェーズ 5  ddc-codegen             ✅ 完了
                            ↓
-                  フェーズ 6  型レベル Write パス (`::`)  🔲 未着手
+                  フェーズ 6  型レベル Write パス (`::`)  ✅ 完了
 ```
 
 | フェーズ | クレート | 主な成果物 | 前提 | 状態 |
@@ -25,7 +25,7 @@ Tech-onRust.md §8.3 のロードマップに基づく実施計画。
 | 3: LFP + 検証 | `ddc-core` | `ContractStore::effective`, `validate_*` | 2 | ✅ 完了 |
 | 4: BodyAnalyzer | `ddc-build` | syn body 検証、エイリアス解決 | 1 のみ | ✅ 完了 |
 | 5: ddc-codegen | `ddc-codegen` | `TokenStream` 生成、alias クロージャ挿入 | 1〜4 | ✅ 完了 |
-| 6: 型レベル Write パス | 全クレート | `::Type.field` 構文・LFP 伝播・BodyAnalyzer 拡張・契約ブロック必須化 | 1〜5 | 🔲 未着手 |
+| 6: 型レベル Write パス | 全クレート | `::Type.field` 構文・LFP 伝播・BodyAnalyzer 拡張・契約ブロック必須化 | 1〜5 | ✅ 完了 |
 
 ---
 
