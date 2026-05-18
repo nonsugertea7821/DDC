@@ -868,7 +868,7 @@ Optional<User> load(UserId id) { ... }
 | `unsafe` 禁止 | 通常の DDC 関数では `unsafe` ブロック使用不可。`[kernel]` 関数のみ許可 |
 | `panic!` / `unwrap()` / `expect()` 禁止 | 依存契約で表現できない暗黙の失敗経路を抑止する |
 | `Optional<T>` / `List<T>` | body 内でも使用できる。codegen が生成ファイル冒頭に `pub type Optional<T> = Option<T>;` / `pub type List<T> = Vec<T>;` を emit するため有効。`void` は return 型宣言専用（body 内の型式には出現しない） |
-| `?` 演算子 | 使用可。ただし依存契約（Read/Write/Call）との整合を崩さない範囲で利用する |
+| `?` 演算子 | 使用可。条件は明示的に 2 つのみ: (1) `?` を適用する呼び出し元は `Call:` に宣言されていること、(2) `?` の前後で実行されるフィールド read/write が `Read:` / `Write:` に宣言されていること。未宣言なら `BodyUndeclaredCall` / `BodyUndeclaredRead` / `BodyUndeclaredWrite` としてエラー |
 
 **宣言と body の型名統一:**
 
@@ -877,6 +877,7 @@ Optional<User> load(UserId id) { ... }
 public Optional<User> find(UserId id)
 (
     Read: id.value
+    Call: self.db.lookup()
 ) {
     let result: Optional<User> = self.db.lookup(id.0)?;
     Ok(result)
