@@ -119,7 +119,7 @@ DDC 関数は **C# スタイルの宣言構文**を採用する。`fn` キーワ
 - `readonly` 修飾子は戻り型の前に付与する
 - `[kernel]` アノテーションは関数宣言の直前の行に置く
 - アクセス修飾子（`public` / `private` 等）を付与できる（公開範囲と契約制約は直交する概念）
-- セクション順序: `Read:` → `Write:` → `Call:`（固定）
+- セクション順序: `Read:` → `Write:` → `Call:` （固定）
 - セクションはすべて省略可能。省略されたセクションは空集合と等価
 - セクション内のエントリは **`,`（コンマ）区切り**。末尾コンマ可。改行は任意の空白として扱う
 - エントリの終端は次のセクションキーワード（`Read:` / `Write:` / `Call:`）または `)` で確定する
@@ -704,7 +704,7 @@ syn         = { version = "2", features = ["full", "visit"] }
 | `ddc-build::check()` API | `compile()` に改名し、Rust コード生成まで担う |
 | `fn` キーワードによる関数宣言 | C# スタイル（戻り型先頭）に統一。`fn` キーワード、`->` 記法、`name: Type` 引数順は使用しない |
 | `Option<T>` / `Vec<T>` / `()` | DDC 構文では `Optional<T>` / `List<T>` / `void` を使用。codegen で Rust 型名に変換する |
-| `Result<T, E>` のシグネチャ利用 | DDC シグネチャは依存契約（Read/Write/Call）と直交させるため、`Result<T, E>` は関数シグネチャに現れない |
+| `Result<T, E>` のシグネチャ利用 | DDC シグネチャは依存契約（Read / Write / Call）と直交させるため、`Result<T, E>` は関数シグネチャに現れない |
 | `realize` キーワード | `class` に統一（§11.7 参照） |
 | `impl Type: Contract` 記法 | `class Type : Contract` に統一（§11.7 参照） |
 | `IRepository::load`（`::` 区切り） | `IRepository.load`（`.` 区切り）に統一（§11.9 参照） |
@@ -779,7 +779,7 @@ fn process(order: Order) -> Result<(), ShippingError> { ... }
 
 // 採用（C# スタイル）
 void process(Order order) (
-    Call: ::Exception.Constructor()
+    Call: ::Exception.Constructor(),
     Write: ::Exception.Message
 ) { ... }
 ```
@@ -1114,18 +1114,19 @@ class DualReader : IReader, ICache {
 
 ---
 
-### 11.19 `UndeclaredPathAccess` / `UndeclaredCall` 削除の根拠
+### 11.19 `UndeclaredPathAccess` / `UndeclaredCall` / `UndeclaredThrow` 削除の根拠
 
 **削除対象（`ValidationErrorKind` から除去）:**
 
 ```rust
 UndeclaredPathAccess,  // ← 削除
 UndeclaredCall,        // ← 削除
+UndeclaredThrow,       // ← 削除（Throw セクション廃止に伴う）
 ```
 
 **理由1: body レベルの検証は `BodyUndeclared*` が担当**
 
-Tech.md §5.5 / §7.2 / §8.5 で定義される「Undeclared」系チェックはすべて body テキスト解析に基づく。つまり「body が `Call:` に宣言されていない関数を呼び出している」という検証である。これは `BodyUndeclaredCall` として Phase 4 (BodyAnalyzer) が担当する。
+Tech.md §5.5 / §7.2 / §8 で定義される「Undeclared」系チェックは body テキスト解析に基づく。つまり「body が `Call:` に宣言されていない関数を呼び出している」という検証である。これは `BodyUndeclaredCall` として Phase 4 (BodyAnalyzer) が担当する。
 
 ContractStore レベルに `UndeclaredCall` を置くと「宣言契約 vs 実効契約」の整合性チェックという別の意味になるが、それは DDC の設計意図とずれる。
 
@@ -1144,5 +1145,6 @@ C# DDC では `ContractDecl` に `envelope`（メソッドの合算上限契約�
 |-----------|---------|
 | `UndeclaredPathAccess` | body レベル → `BodyUndeclaredRead` / `BodyUndeclaredWrite` が担当 |
 | `UndeclaredCall` | body レベル → `BodyUndeclaredCall` が担当 |
+| `UndeclaredThrow` | Throw セクション廃止に伴い仕様対象外 |
 
 ContractStore が担う宣言契約レベルの検証は `ReadonlyViolation`（effective.Write 非空）と `KernelBoundaryViolation`（[kernel] に Read:/Write:/Call: 宣言）の2つのみ。

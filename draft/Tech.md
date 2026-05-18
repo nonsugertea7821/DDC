@@ -856,6 +856,11 @@ Write:
     ::Exception.Message
 ```
 
+```csharp
+// 例: ホスト言語上の制御流（契約外）
+throw new ValidationException("invalid input");
+```
+
 この記述は「失敗しうる」ことの宣言ではなく、エラー構築・メッセージ書き込みという依存操作の上限を示す。
 
 ### 8.3 `[kernel]` との関係
