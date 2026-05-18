@@ -879,7 +879,8 @@ public Optional<User> find(UserId id)
     Read: id.value
     Call: self.db.lookup()
 ) {
-    let result: Optional<User> = self.db.lookup(id.value)?;
+    let _id = id.value;
+    let result: Optional<User> = self.db.lookup()?;
     Ok(result)
 }
 ```
