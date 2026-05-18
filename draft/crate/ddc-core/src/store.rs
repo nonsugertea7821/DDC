@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn validate_kernel_boundary_ok() {
-        // [kernel] 関数に依存宣言なし → errors 空
+        // [kernel] 関数が依存宣言を持たなければ errors 空
         let k = as_kernel(make_fn("k", &[]));
         let s = store(vec![k]);
         assert!(s.validate_kernel_boundary().is_empty());
