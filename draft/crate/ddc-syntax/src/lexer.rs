@@ -11,7 +11,6 @@ pub(crate) enum Token {
     ReadSection,   // "Read:"
     WriteSection,  // "Write:"
     CallSection,   // "Call:"
-    ThrowSection,  // "Throw:"
     // アノテーション
     KernelAnnotation,  // "[kernel]"
     // 識別子・リテラル
@@ -184,7 +183,7 @@ impl<'a> Lexer<'a> {
             word.push(self.advance().unwrap());
         }
 
-        // "Read:" / "Write:" / "Call:" / "Throw:" — コロン付きで確認
+        // "Read:" / "Write:" / "Call:" — コロン付きで確認
         self.skip_whitespace_and_comments();
         if self.peek() == Some(':') {
             // "::" でなければセクションヘッダ候補
@@ -194,7 +193,6 @@ impl<'a> Lexer<'a> {
                     "Read"  => { self.advance(); return Token::ReadSection; }
                     "Write" => { self.advance(); return Token::WriteSection; }
                     "Call"  => { self.advance(); return Token::CallSection; }
-                    "Throw" => { self.advance(); return Token::ThrowSection; }
                     _ => {}
                 }
             }

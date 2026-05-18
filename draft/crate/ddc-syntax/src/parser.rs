@@ -408,7 +408,6 @@ fn token_text(tok: &Token) -> String {
         Token::ReadSection       => "Read".into(),
         Token::WriteSection      => "Write".into(),
         Token::CallSection       => "Call".into(),
-        Token::ThrowSection      => "Throw".into(),
         Token::KernelAnnotation  => "[kernel]".into(),
         Token::Ident(s)          => s.clone(),
         Token::AccessModifier(s) => s.clone(),
@@ -445,8 +444,6 @@ fn parse_contract_block(block_text: &str, start_line: usize) -> Result<DeclaredC
             pos += "Write:".len(); "Write"
         } else if inner[pos..].starts_with("Call:") {
             pos += "Call:".len(); "Call"
-        } else if inner[pos..].starts_with("Throw:") {
-            pos += "Throw:".len(); "Throw"
         } else {
             return Err(ParseError {
                 message: format!(
@@ -495,7 +492,6 @@ fn parse_contract_block(block_text: &str, start_line: usize) -> Result<DeclaredC
                 }
                 "Write" => contract.write.push(StructurePath(entry)),
                 "Call"  => contract.call.push(FunctionId(entry.trim_end_matches("()").to_string())),
-                "Throw" => contract.throw.push(ThrowType(entry)),
                 _ => {}
             }
 
@@ -509,7 +505,7 @@ fn parse_contract_block(block_text: &str, start_line: usize) -> Result<DeclaredC
 
 fn is_section_header(input: &str, pos: usize) -> bool {
     let s = &input[pos..];
-    s.starts_with("Read:") || s.starts_with("Write:") || s.starts_with("Call:") || s.starts_with("Throw:")
+    s.starts_with("Read:") || s.starts_with("Write:") || s.starts_with("Call:")
 }
 
 fn read_contract_entry(input: &str, pos: usize, _line: &mut usize) -> Option<(String, usize)> {
@@ -772,9 +768,10 @@ public void process_shipping(Order order)
         order.id,
         order.items[].sku
     Write:
-        order.status
-    Throw:
-        ShippingError
+        order.status,
+        ::Exception.Message
+    Call:
+        ::Exception.Constructor()
 ) {
     // body
 }
@@ -785,7 +782,8 @@ public void process_shipping(Order order)
         assert_eq!(f.contract.read[0].path.0, "order.id");
         assert_eq!(f.contract.read[1].path.0, "order.items[].sku");
         assert_eq!(f.contract.write[0].0, "order.status");
-        assert_eq!(f.contract.throw[0].0, "ShippingError");
+        assert_eq!(f.contract.write[1].0, "::Exception.Message");
+        assert_eq!(f.contract.call[0].0, "::Exception.Constructor");
     }
 
     // ── エイリアス ───────────────────────────────────────────────────────────
@@ -831,7 +829,7 @@ public readonly Optional<User> find(UserId id)
 [kernel]
 public void send_bytes(Conn conn)
 (
-    Throw: IoError
+    Write: ::Exception.Message
 ) {
     unsafe { }
 }
@@ -839,7 +837,18 @@ public void send_bytes(Conn conn)
         let file = parse(src);
         let DdcItem::DdcFn(f) = &file.items[0] else { panic!() };
         assert!(f.annotations.contains(&DdcAnnotation::Kernel));
-        assert_eq!(f.contract.throw[0].0, "IoError");
+        assert_eq!(f.contract.write[0].0, "::Exception.Message");
+    }
+
+    #[test]
+    fn throw_section_is_rejected() {
+        let src = r#"
+void fail()
+(
+    Throw: SomeError
+) { }
+"#;
+        assert!(parse_ddc_file(src).is_err());
     }
 
     // ── contract / class ─────────────────────────────────────────────────────
@@ -973,14 +982,14 @@ void transfer(Account from, Account to)
 (
     Read: from.balance, to.id
     Write: from.balance, to.balance
-    Throw: InsufficientFundsError, AccountLockedError
+    Call: ::Exception.Constructor(), notify_failure()
 ) { }
 "#;
         let file = parse(src);
         let DdcItem::DdcFn(f) = &file.items[0] else { panic!() };
         assert_eq!(f.contract.read.len(), 2);
         assert_eq!(f.contract.write.len(), 2);
-        assert_eq!(f.contract.throw.len(), 2);
+        assert_eq!(f.contract.call.len(), 2);
     }
 
     // ── 複数アイテム連続（回帰テスト）───────────────────────────────────────
