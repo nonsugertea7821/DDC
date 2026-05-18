@@ -863,6 +863,24 @@ Write:
 `[kernel]` 関数内で生成された例外・パニックが外部環境へ漏れる可能性は、ホスト言語と実行基盤に依存する。
 DDC はこれを依存契約として完全には追跡しない。必要な場合は Middleware 層で捕捉し、`Call:` / `Write:` として正規化して扱うべきである。
 
+```ddc
+// kernel 側（契約は空）
+[kernel]
+public void Send(byte[] bytes)();
+
+// middleware 側でエラー依存を正規化
+public void SafeSend(Packet packet)
+(
+    Read:
+        packet.Bytes[]
+    Call:
+        network.Send(),
+        ::Exception.Constructor()
+    Write:
+        ::Exception.Message
+);
+```
+
 ---
 
 ## 9. readonly 関数

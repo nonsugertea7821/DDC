@@ -454,6 +454,22 @@ $$\text{effective.Write}(f) = \text{declared.Write}(f) \cup \bigcup_{\substack{g
 Rust 以外をホストとする実装では、`[kernel]` 内で生成された例外オブジェクトが外部へ漏れる可能性を完全には遮断できない。
 これは依存契約ではなく実行時制御の問題として扱い、必要に応じて Middleware 層で捕捉・正規化し `Call` / `Write` に落として表現する。
 
+```ddc
+[kernel]
+public void send_bytes(Conn conn)();
+
+public void safe_send(Packet packet)
+(
+    Read:
+        packet.bytes[]
+    Call:
+        network.send(),
+        ::Exception.Constructor()
+    Write:
+        ::Exception.Message
+) { /* middleware */ }
+```
+
 再帰・相互再帰は最小不動点（LFP）として計算する。実装は Tarjan SCC + トポロジカル順序で反復する。
 
 ### 6.3 ContractStore API
