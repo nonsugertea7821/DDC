@@ -84,8 +84,8 @@ fn tarjan_sccs(graph: &DependencyGraph) -> Vec<Vec<FunctionId>> {
 // ─── LFP 計算 ────────────────────────────────────────────────────────────────
 
 /// Tarjan SCC + トポロジカル順 LFP で全関数の実効契約を計算する。
-/// - Read/Write/Throw を伝播する。
-/// - [kernel] は Read/Write の伝播を遮断し、Throw は通過させる（§10.1）。
+/// - Read/Write を伝播する。
+/// - [kernel] は Read/Write の伝播を遮断する（§10.1）。
 fn compute_all(graph: &DependencyGraph) -> HashMap<FunctionId, EffectiveContract> {
     // Tarjan 返却順 = 逆トポロジカル順（callee の SCC が先）
     let sccs = tarjan_sccs(graph);
@@ -101,7 +101,6 @@ fn compute_all(graph: &DependencyGraph) -> HashMap<FunctionId, EffectiveContract
                 read:  declared.read.iter().map(|rp| rp.path.clone()).collect(),
                 write: declared.write.iter().cloned().collect(),
                 call:  declared.call.iter().cloned().collect(),
-                throw: declared.throw.iter().cloned().collect(),
             };
             if let Some(callees) = graph.edges.get(m) {
                 for callee in callees {
@@ -112,8 +111,6 @@ fn compute_all(graph: &DependencyGraph) -> HashMap<FunctionId, EffectiveContract
                         eff.read.extend(callee_eff.read.iter().cloned());
                         eff.write.extend(callee_eff.write.iter().cloned());
                     }
-                    // kernel でも Throw は伝播
-                    eff.throw.extend(callee_eff.throw.iter().cloned());
                 }
             }
             result.insert(m.clone(), eff);
@@ -132,13 +129,12 @@ fn compute_all(graph: &DependencyGraph) -> HashMap<FunctionId, EffectiveContract
                     if !scc_set.contains(callee) { continue; }
                     let Some(callee_eff) = snap.get(callee) else { continue };
                     let eff = result.get_mut(m).unwrap();
-                    let before = eff.read.len() + eff.write.len() + eff.throw.len();
+                    let before = eff.read.len() + eff.write.len();
                     if !graph.kernels.contains(callee) {
                         eff.read.extend(callee_eff.read.iter().cloned());
                         eff.write.extend(callee_eff.write.iter().cloned());
                     }
-                    eff.throw.extend(callee_eff.throw.iter().cloned());
-                    if eff.read.len() + eff.write.len() + eff.throw.len() > before {
+                    if eff.read.len() + eff.write.len() > before {
                         changed = true;
                     }
                 }
@@ -231,7 +227,7 @@ mod tests {
     use super::*;
     use ddc_syntax::{
         DdcAnnotation, DdcBody, DdcFn, DdcFnSig, DdcFile, DdcItem,
-        DeclaredContract, FunctionId, ReadPath, StructurePath, ThrowType,
+        DeclaredContract, FunctionId, ReadPath, StructurePath,
     };
 
     fn make_fn(name: &str, calls: &[&str]) -> DdcFn {
@@ -263,11 +259,6 @@ mod tests {
             path:  StructurePath(s.to_string()),
             alias: None,
         }).collect();
-        f
-    }
-
-    fn with_throw(mut f: DdcFn, throws: &[&str]) -> DdcFn {
-        f.contract.throw = throws.iter().map(|s| ThrowType(s.to_string())).collect();
         f
     }
 
@@ -364,8 +355,8 @@ mod tests {
 
     #[test]
     fn validate_kernel_boundary_ok() {
-        // [kernel] 関数に Throw: のみ → errors 空
-        let k = as_kernel(with_throw(make_fn("k", &[]), &["IoError"]));
+        // [kernel] 関数が依存宣言を持たなければ errors 空
+        let k = as_kernel(make_fn("k", &[]));
         let s = store(vec![k]);
         assert!(s.validate_kernel_boundary().is_empty());
     }
@@ -381,4 +372,3 @@ mod tests {
         assert_eq!(errors[0].function, FunctionId("k".into()));
     }
 }
-

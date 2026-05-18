@@ -9,9 +9,6 @@ pub struct StructurePath(pub String);
 pub struct FunctionId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ThrowType(pub String);
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeId(pub String);
 
 /// `Read:` セクションの 1 エントリ（§4.1）
@@ -29,7 +26,6 @@ pub struct DeclaredContract {
     pub read: Vec<ReadPath>,
     pub write: Vec<StructurePath>,
     pub call: Vec<FunctionId>,
-    pub throw: Vec<ThrowType>,
 }
 
 // ─── §4.3 DDC アノテーション ────────────────────────────────────────────────

@@ -104,8 +104,6 @@ DDC 関数は **C# スタイルの宣言構文**を採用する。`fn` キーワ
         path3
     Call:
         func1()
-    Throw:
-        ErrorType
 ) {
     // Rust body
 }
@@ -121,10 +119,10 @@ DDC 関数は **C# スタイルの宣言構文**を採用する。`fn` キーワ
 - `readonly` 修飾子は戻り型の前に付与する
 - `[kernel]` アノテーションは関数宣言の直前の行に置く
 - アクセス修飾子（`public` / `private` 等）を付与できる（公開範囲と契約制約は直交する概念）
-- セクション順序: `Read:` → `Write:` → `Call:` → `Throw:`（固定）
+- セクション順序: `Read:` → `Write:` → `Call:` （固定）
 - セクションはすべて省略可能。省略されたセクションは空集合と等価
 - セクション内のエントリは **`,`（コンマ）区切り**。末尾コンマ可。改行は任意の空白として扱う
-- エントリの終端は次のセクションキーワード（`Read:` / `Write:` / `Call:` / `Throw:`）または `)` で確定する
+- エントリの終端は次のセクションキーワード（`Read:` / `Write:` / `Call:`）または `)` で確定する
 
 **例:**
 
@@ -135,9 +133,10 @@ public void process_shipping(Order order)
         order.id,
         order.items[].sku
     Write:
-        order.status
-    Throw:
-        ShippingError
+        order.status,
+        ::Exception.Message
+    Call:
+        ::Exception.Constructor()
 ) {
     // Rust body
 }
@@ -153,8 +152,6 @@ public void process_shipping(Order order)
         order.items[].sku as sku    // エイリアス宣言: body 内で sku() として使用できる
     Write:
         order.status
-    Throw:
-        ShippingError
 ) {
     // body 内では sku() と呼び出す
     // codegen が let sku = || order.items.iter().map(|n| &n.sku); を先頭に挿入する
@@ -184,8 +181,8 @@ public void transfer(Account from, Account to)
         from.balance, to.id
     Write:
         from.balance, to.balance
-    Throw:
-        InsufficientFundsError, AccountLockedError
+    Call:
+        ::Exception.Constructor(), notify_failure()
 ) {
     // Rust body
 }
@@ -196,16 +193,13 @@ public void transfer(Account from, Account to)
 ```
 [kernel]
 public void send_bytes(Conn conn)
-(
-    Throw:
-        IoError
-) {
+() {
     // Rust body（unsafe 可）
     unsafe { /* ... */ }
 }
 ```
 
-`[kernel]` の契約ブロックは `Throw:` のみ記述できる。`Read:` / `Write:` / `Call:` は宣言禁止。
+`[kernel]` の契約ブロックは空 (`()`) のみ記述できる。`Read:` / `Write:` / `Call:` は宣言禁止。
 
 ### 3.4 contract 宣言
 
@@ -279,7 +273,6 @@ class DualReader : IReader, ICache {
 ```rust
 pub struct StructurePath(pub String);  // "order.items[].sku" など
 pub struct FunctionId(pub String);     // "process_shipping" など
-pub struct ThrowType(pub String);      // "ShippingError" など
 pub struct TypeId(pub String);         // "IRepository", "Order" など
 ```
 
@@ -302,7 +295,6 @@ pub struct DeclaredContract {
     pub read:  Vec<ReadPath>,       // Read: エントリ（エイリアスあり・なし両方を含む）
     pub write: Vec<StructurePath>,
     pub call:  Vec<FunctionId>,
-    pub throw: Vec<ThrowType>,
 }
 ```
 
@@ -443,7 +435,6 @@ pub struct EffectiveContract {
     pub read:  HashSet<StructurePath>,
     pub write: HashSet<StructurePath>,
     pub call:  HashSet<FunctionId>,
-    pub throw: HashSet<ThrowType>,
 }
 ```
 
@@ -456,13 +447,28 @@ $K$ を `[kernel]` 関数の全体集合とする。
 $$\text{effective.Read}(f) = \text{declared.Read}(f) \cup \bigcup_{\substack{g \in \text{Call}(f) \\ g \notin K}} \text{effective.Read}(g)$$
 
 $$\text{effective.Write}(f) = \text{declared.Write}(f) \cup \bigcup_{\substack{g \in \text{Call}(f) \\ g \notin K}} \text{effective.Write}(g)$$
-
-$$\text{effective.Throw}(f) = \text{declared.Throw}(f) \cup \bigcup_{g \in \text{Call}(f)} \text{effective.Throw}(g)$$
-
-`[kernel]` 関数は **dependency propagation cut point（依存伝播切断点）** として機能する。呼び出し元から見ると `Throw:` 効果のみ観測可能な解析上のブラックボックスである。
-
+`[kernel]` 関数は **dependency propagation cut point（依存伝播切断点）** として機能する。
 `[kernel]` 関数の `effective.Read` / `effective.Write` は呼び出し元に **伝播しない**。
-`[kernel]` 関数の `declared.Throw` は呼び出し元に **伝播する**。
+エラー経路（`throw` / `panic`）は依存契約の合成対象外とする。
+
+Rust 以外をホストとする実装では、`[kernel]` 内で生成された例外オブジェクトが外部へ漏れる可能性を完全には遮断できない。
+これは依存契約ではなく実行時制御の問題として扱い、必要に応じて Middleware 層で捕捉・正規化し `Call` / `Write` に落として表現する。
+
+```ddc
+[kernel]
+public void send_bytes(Conn conn)();
+
+public void safe_send(Packet packet)
+(
+    Read:
+        packet.bytes[]
+    Call:
+        network.send(),
+        ::Exception.Constructor()
+    Write:
+        ::Exception.Message
+) { /* middleware */ }
+```
 
 再帰・相互再帰は最小不動点（LFP）として計算する。実装は Tarjan SCC + トポロジカル順序で反復する。
 
@@ -530,13 +536,12 @@ pub enum ValidationErrorKind {
     BodyUndeclaredRead,        // body が Read:/Write: に宣言されていないパスを直接読み取っている
     BodyUndeclaredWrite,       // body が Write: に宣言されていないパスを直接変更している
     BodyUndeclaredCall,        // body が Call: に宣言されていない関数を直接呼び出している
-    BodyUndeclaredThrow,       // body が Throw: に宣言されていない例外型を直接 throw している
     BodyUnsafeBlock,           // 非 [kernel] 関数の body に unsafe ブロックが存在する
     BodyForbiddenMacro,        // body に panic! / unwrap() / expect() が存在する
 
     // エイリアス宣言レベルの検証（パース・宣言時）
     AliasNameConflict,         // エイリアス名がパラメータ名または他のエイリアス名と衝突する
-    AliasOnNonReadSection,     // Write:/Call:/Throw: セクションに as 修飾子が使用された
+    AliasOnNonReadSection,     // Write:/Call: セクションに as 修飾子が使用された
 }
 ```
 
@@ -699,7 +704,7 @@ syn         = { version = "2", features = ["full", "visit"] }
 | `ddc-build::check()` API | `compile()` に改名し、Rust コード生成まで担う |
 | `fn` キーワードによる関数宣言 | C# スタイル（戻り型先頭）に統一。`fn` キーワード、`->` 記法、`name: Type` 引数順は使用しない |
 | `Option<T>` / `Vec<T>` / `()` | DDC 構文では `Optional<T>` / `List<T>` / `void` を使用。codegen で Rust 型名に変換する |
-| `Result<T, E>` のシグネチャ利用 | DDC は例外モデル（`Throw:` セクション）を採用。`Result<T, E>` は関数シグネチャに現れない |
+| `Result<T, E>` のシグネチャ利用 | DDC シグネチャは依存契約（Read / Write / Call）と直交させるため、`Result<T, E>` は関数シグネチャに現れない |
 | `realize` キーワード | `class` に統一（§11.7 参照） |
 | `impl Type: Contract` 記法 | `class Type : Contract` に統一（§11.7 参照） |
 | `IRepository::load`（`::` 区切り） | `IRepository.load`（`.` 区切り）に統一（§11.9 参照） |
@@ -765,15 +770,18 @@ syn         = { version = "2", features = ["full", "visit"] }
 
 **根拠:**
 - `Result<T, E>` は Rust の「例外を使わない」設計に由来する型
-- DDC のエラーモデルは `Throw:` セクションによる例外モデルを採用しており、C# / Java と一致する
-- 関数の失敗の可能性は `Throw:` に宣言することで表現する
+- DDC は依存契約（Read/Write/Call）を記述する言語であり、失敗経路（throw/panic）は制御流として契約外に置く
+- エラー関連の依存は `Call: ::Exception.Constructor()` / `Write: ::Exception.Message` で表現できる
 
 ```
 // 廃止（Rust スタイル）
-fn process(order: Order) -> Result<(), ShippingError> ( Throw: ShippingError ) { ... }
+fn process(order: Order) -> Result<(), ShippingError> { ... }
 
 // 採用（C# スタイル）
-void process(Order order) ( Throw: ShippingError ) { ... }
+void process(Order order) (
+    Call: ::Exception.Constructor(),
+    Write: ::Exception.Message
+) { ... }
 ```
 
 ### 11.7 `class` キーワードの採用
@@ -858,9 +866,9 @@ Optional<User> load(UserId id) { ... }
 | 制約 | 内容 |
 | --- | --- |
 | `unsafe` 禁止 | 通常の DDC 関数では `unsafe` ブロック使用不可。`[kernel]` 関数のみ許可 |
-| `panic!` / `unwrap()` / `expect()` 禁止 | DDC のエラーモデルは `Throw:` による形式的宣言。暗黙の失敗は禁止 |
+| `panic!` / `unwrap()` / `expect()` 禁止 | 依存契約で表現できない暗黙の失敗経路を抑止する |
 | `Optional<T>` / `List<T>` | body 内でも使用できる。codegen が生成ファイル冒頭に `pub type Optional<T> = Option<T>;` / `pub type List<T> = Vec<T>;` を emit するため有効。`void` は return 型宣言専用（body 内の型式には出現しない） |
-| `?` 演算子 | 使用可。ただし伝播するエラー型は `Throw:` 宣言と一致しなければならない |
+| `?` 演算子 | 使用可。条件は明示的に 2 つのみ: (1) `?` を適用する呼び出し元は `Call:` に宣言されていること、(2) `?` の前後で実行されるフィールド read/write が `Read:` / `Write:` に宣言されていること。未宣言なら `BodyUndeclaredCall` / `BodyUndeclaredRead` / `BodyUndeclaredWrite` としてエラー |
 
 **宣言と body の型名統一:**
 
@@ -869,8 +877,10 @@ Optional<User> load(UserId id) { ... }
 public Optional<User> find(UserId id)
 (
     Read: id.value
+    Call: self.db.lookup()
 ) {
-    let result: Optional<User> = self.db.lookup(id.0)?;
+    let _id = id.value;
+    let result: Optional<User> = self.db.lookup()?;
     Ok(result)
 }
 ```
@@ -888,7 +898,6 @@ DDC の核心保証は、宣言契約の整合性チェックのみでは成立�
 | フィールド読み取り | body 内の全フィールドアクセス式を canonical path に解決し、`Read:` または `Write:` 宣言と照合する |
 | フィールド書き込み | body 内の全フィールド代入式を canonical path に解決し、`Write:` 宣言と照合する |
 | 関数呼び出し | body 内の全呼び出し式を `Call:` 宣言と照合する |
-| 例外生成 | `return Err(...)` / `?` 演算子の例外型を `Throw:` 宣言と照合する |
 | unsafe ブロック | `[kernel]` アノテーションを持たない関数の body に `unsafe` ブロックが存在する場合エラー |
 | 禁止マクロ | `panic!` / `unwrap()` / `expect()` の存在をエラーとする |
 
@@ -959,7 +968,7 @@ Rust の型システムは `Vec<Item>` を受け取った関数が `item.sku` �
 
 **2. 推移的副作用の静的可視化**
 
-Rust の関数シグネチャは呼び出し先が内部で何を変更するかを型として記述しない（`Rc<RefCell<T>>` 等の内部可変性を通じた変更は `&self` シグネチャから不可視）。DDC の実効契約は `Call:` チェーン全体の Read/Write/Throw を代数的に展開し、呼び出し元から推移的副作用を静的に読み取れる。あるパス `p` を変更する関数を追跡するために実行時解析は不要であり、実効契約のグラフ走査で完結する。
+Rust の関数シグネチャは呼び出し先が内部で何を変更するかを型として記述しない（`Rc<RefCell<T>>` 等の内部可変性を通じた変更は `&self` シグネチャから不可視）。DDC の実効契約は `Call:` チェーン全体の Read/Write/Call を代数的に展開し、呼び出し元から推移的副作用を静的に読み取れる。あるパス `p` を変更する関数を追跡するために実行時解析は不要であり、実効契約のグラフ走査で完結する。
 
 **3. `readonly` の推移的契約保証**
 
@@ -967,7 +976,7 @@ Rust の `&self` は直接的な変更を防ぐが、`Cell<T>` / `RefCell<T>` / 
 
 **4. `[kernel]` による検証境界の形式的分離**
 
-Rust の `unsafe` ブロックはコンパイラの借用検査を局所的に無効化するが、その副作用範囲を外部に宣言する仕組みがない。DDC の `[kernel]` アノテーションは OS・ハードウェア境界の副作用を `Throw:` のみに限定して宣言し、Read/Write 効果が呼び出し元に伝播しないことを形式的に保証する。`[kernel]` 境界の外側では通常の DDC 検証が有効であり、「検証可能な領域」と「検証スコープ外の領域」の境界が明示される。
+Rust の `unsafe` ブロックはコンパイラの借用検査を局所的に無効化するが、その副作用範囲を外部に宣言する仕組みがない。DDC の `[kernel]` アノテーションは OS・ハードウェア境界の副作用を依存契約の外へ隔離し、Read/Write 効果が呼び出し元に伝播しないことを形式的に保証する。`[kernel]` 境界の外側では通常の DDC 検証が有効であり、「検証可能な領域」と「検証スコープ外の領域」の境界が明示される。
 
 **5. コントラクトによる多態性と capability 保証**
 
@@ -1114,12 +1123,12 @@ class DualReader : IReader, ICache {
 ```rust
 UndeclaredPathAccess,  // ← 削除
 UndeclaredCall,        // ← 削除
-UndeclaredThrow,       // ← 削除
+UndeclaredThrow,       // ← 削除（Throw セクション廃止に伴う）
 ```
 
 **理由1: body レベルの検証は `BodyUndeclared*` が担当**
 
-Tech.md §5.5 / §7.2 / §8.5 で定義される「Undeclared」系チェックはすべて body テキスト解析に基づく。つまり「body が `Call:` に宣言されていない関数を呼び出している」という検証である。これは `BodyUndeclaredCall` として Phase 4 (BodyAnalyzer) が担当する。
+Tech.md §5.5 / §7.2 / §8 で定義される「Undeclared」系チェックは body テキスト解析に基づく。つまり「body が `Call:` に宣言されていない関数を呼び出している」という検証である。これは `BodyUndeclaredCall` として Phase 4 (BodyAnalyzer) が担当する。
 
 ContractStore レベルに `UndeclaredCall` を置くと「宣言契約 vs 実効契約」の整合性チェックという別の意味になるが、それは DDC の設計意図とずれる。
 
@@ -1138,6 +1147,6 @@ C# DDC では `ContractDecl` に `envelope`（メソッドの合算上限契約�
 |-----------|---------|
 | `UndeclaredPathAccess` | body レベル → `BodyUndeclaredRead` / `BodyUndeclaredWrite` が担当 |
 | `UndeclaredCall` | body レベル → `BodyUndeclaredCall` が担当 |
-| `UndeclaredThrow` | body レベル → `BodyUndeclaredThrow` が担当 |
+| `UndeclaredThrow` | Throw セクション廃止に伴い仕様対象外 |
 
 ContractStore が担う宣言契約レベルの検証は `ReadonlyViolation`（effective.Write 非空）と `KernelBoundaryViolation`（[kernel] に Read:/Write:/Call: 宣言）の2つのみ。

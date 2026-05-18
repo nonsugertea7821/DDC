@@ -11,7 +11,7 @@
 **本仕様が定義する対象:**
 
 - 契約宣言の構文と文法規則
-- `Read` / `Write` / `Call` / `Throw` 各セクションの意味論
+- `Read` / `Write` / `Call` 各セクションの意味論
 - 構造パスの文法および評価規則
 - 宣言契約・実効契約の合成規則
 - `readonly` 関数の制約
@@ -66,7 +66,7 @@ DDC は「構造の存在（Existence）」と「構造への依存権（Depende
 構造が public に存在する ≠ その構造へ依存してよい
 ```
 
-関数が依存する構造パスは、`Read` / `Write` / `Call` / `Throw` として契約に静的宣言されなければならない。未宣言パスへのアクセスはコンパイル・静的解析段階で禁止される。
+関数が依存する構造パスは、`Read` / `Write` / `Call` として契約に静的宣言されなければならない。未宣言パスへのアクセスはコンパイル・静的解析段階で禁止される。
 
 これは従来の可視性制御（`public` / `private` / `protected`）とは異なる制御レベルである。可視性は「アクセス先が持つ属性」であるのに対し、DDC 契約は「アクセス元が持つ権限」を制御する。
 
@@ -101,7 +101,7 @@ DDC:  visible ≠ dependency-possible（可視性と依存権の分離）
 | **依存権（dependency right）** | 契約に宣言されたアクセスを行う権限。構造の存在（可視性）とは独立 |
 | **ホスト言語（host language）** | DDC 契約が付与される対象の言語（C#、Java、TypeScript など） |
 | **直接作用（direct effect）** | 呼び出し先に委譲せず、関数実装自身が直接行う操作 |
-| **例外生成点（throw site）** | `throw` 文が存在する関数フレーム |
+| **エラー経路（error path）** | `throw` / `panic` などで関数フレームを離脱する制御経路 |
 | **Call Reachability** | `Call:` チェーンを通じた推移的な到達可能性 |
 | **`[kernel]` アノテーション** | 関数を DDC 検証スコープ境界として指定するアノテーション。内部の Read/Write は DDC 検証対象外となる |
 | **検証スコープ境界（verification scope boundary）** | `[kernel]` が示す境界。この境界の外側（呼び出し元）へは `effective.Read` / `effective.Write` が伝播しない |
@@ -116,17 +116,15 @@ DDC の契約はホスト言語の関数宣言に付随するブロックとし�
 
 ```ebnf
 contract-block    ::= "(" contract-sections ")"
-contract-sections ::= read-section? write-section? call-section? throw-section?
+contract-sections ::= read-section? write-section? call-section?
 
 read-section      ::= "Read:" NEWLINE read-entry+
 write-section     ::= "Write:" NEWLINE path-entry+
 call-section      ::= "Call:" NEWLINE call-entry+
-throw-section     ::= "Throw:" NEWLINE type-entry+
 
 read-entry        ::= INDENT path ("as" identifier)? NEWLINE
 path-entry        ::= INDENT path NEWLINE
 call-entry        ::= INDENT call-path "()" NEWLINE
-type-entry        ::= INDENT type-name NEWLINE
 
 path              ::= root-identifier path-segment*
 path-segment      ::= "." identifier | "[]" | "[]" "." identifier
@@ -145,7 +143,7 @@ param-list             ::= param ("," param)*
 param                  ::= type-name identifier
 ```
 
-各セクションは省略可能である（§2.4 参照）。セクションの順序は固定であり、`Read:` → `Write:` → `Call:` → `Throw:` の順に記述しなければならない。
+各セクションは省略可能である（§2.4 参照）。セクションの順序は固定であり、`Read:` → `Write:` → `Call:` の順に記述しなければならない。
 
 ### 2.2 関数宣言との結合
 
@@ -160,8 +158,6 @@ DDC 契約は、ホスト言語の関数宣言（メソッド宣言）の直後�
         [パスリスト]
     Call:
         [呼び出しリスト]
-    Throw:
-        [例外型リスト]
 );
 ```
 
@@ -177,15 +173,12 @@ public readonly User Find(UserId id)
 );
 ```
 
-`[kernel]` アノテーション（§12.6 参照）は関数宣言の直前の行に置かれる。`[kernel]` 関数の契約ブロックは `Throw:` セクションのみを含んでよい。
+`[kernel]` アノテーション（§12.6 参照）は関数宣言の直前の行に置かれる。`[kernel]` 関数の契約ブロックは空 (`()`) でなければならない。
 
 ```ddc
 [kernel]
 public void Send(byte[] bytes)
-(
-    Throw:
-        NetworkDisconnectedException
-);
+();
 ```
 
 ### 2.3 完全な例
@@ -200,8 +193,6 @@ public void ProcessShipping(Order order)
         order.Status
     Call:
         outerRepository.GetSomeData()
-    Throw:
-        IOException
 );
 ```
 
@@ -216,7 +207,6 @@ public void ProcessShipping(Order order)
 | `Read:` | 関数はいかなる構造パスも直接読み取らない |
 | `Write:` | 関数はいかなる構造パスも直接変更または構築しない |
 | `Call:` | 関数はいかなる他の関数も呼び出さない |
-| `Throw:` | 関数は例外生成点を持たない |
 
 すべてのセクションが省略された空の契約ブロック `()` は、副作用・依存がまったく存在しない関数 `noop` を意味する。
 
@@ -276,8 +266,6 @@ public void Transfer(Account from, Account to, Money amount)
         to.Balance
     Call:
         auditLogger.Record()
-    Throw:
-        InsufficientFundsException
 );
 ```
 
@@ -394,7 +382,7 @@ DDC の契約は「依存してよい上限（capability envelope）」を定義
 - 条件分岐により一方のパスのみが実行時に到達可能であっても、両パスを宣言してよい
 - 「宣言したが実際には使用しない依存」は警告対象となりうるが（§15.2 参照）、エラーではない
 
-同様に `Throw: IOException` は「必ず `IOException` を投げる」ではなく「投げうる」という能力の上限宣言である。`Read:` / `Write:` も能力の上限であって、実行の記述ではない。
+同様に `Call: ::Exception.Constructor()` や `Write: ::Exception.Message` の宣言も「必ず実行される」ことを意味しない。`Read:` / `Write:` / `Call:` は能力の上限であって、実行トレースの確定記述ではない。
 
 ### 4.2 直接作用の原則
 
@@ -588,7 +576,7 @@ Read:
 
 **制約:**
 
-- `as` 修飾子は `Read:` セクションにのみ記述できる。`Write:` / `Call:` / `Throw:` セクションでの使用はエラーとなる
+- `as` 修飾子は `Read:` セクションにのみ記述できる。`Write:` / `Call:` セクションでの使用はエラーとなる
 - `identifier` は当該関数のパラメータ名、および同一 `Read:` ブロック内の他のエイリアス名と衝突してはならない
 - 同一パスへのエイリアスなし宣言とエイリアスあり宣言の共存はエラーとなる（重複宣言）
 - body 内の変数代入（`let x = something` 等）はエイリアス宣言として扱わない。エイリアスは必ずコントラクトの `as` 宣言で行う
@@ -850,96 +838,53 @@ Call:
 
 ---
 
-## 8. Throw
+## 8. エラー経路（throw / panic）と契約の関係
 
-### 8.1 定義
+### 8.1 基本方針
 
-`Throw:` は、関数実装自身が**例外生成点（throw site）**となる例外型を宣言する。「例外生成点」とは、関数本体に `throw new ExceptionType(...)` が存在するフレームを意味する。
+`throw` / `panic` は制御流表現であり、DDC の依存契約セクションには含めない。
+DDC 契約は依存（Read/Write/Call）を記述するため、エラー経路そのものは契約外である。
 
-### 8.2 意味論
+### 8.2 エラー情報の表現
 
-`Throw:` は「この関数フレームが例外生成点である」ことを意味する。これは「必ず例外を投げる」という記述ではなく、「投げうる」という能力の宣言である（§4.1 参照）。
-
-```csharp
-if (id == null)
-    throw new ValidationException("id is null");
-```
+エラーに関する依存は、必要に応じて `Call:` / `Write:` で表現する。
 
 ```ddc
-Throw:
-    ValidationException
-```
-
-`Throw:` に宣言する例外型は完全修飾名またはホスト言語のスコープで解決可能な名前でなければならない。基底クラスを宣言することで派生例外を包括的に宣言してよい。宣言された基底クラスの派生型を throw することは宣言を満たす。
-
-### 8.3 呼び出し先例外は記述しない
-
-呼び出し先が投げる例外は `Throw:` に記述してはならない。それらは `Call:` による実効契約の統合（§10 参照）に含まれる。
-
-```ddc
-// NG: connection.Query() が投げる例外を Throw: に記述している
-Throw:
-    SqlException    // connection.Query() の内部でのみ throw される場合
-
-// ok: SqlException の伝播は Call: connection.Query() の実効契約に含まれる
 Call:
-    connection.Query()
+    ::Exception.Constructor()
+Write:
+    ::Exception.Message
 ```
-
-### 8.4 例外の再スロー
-
-`catch` ブロックで例外を再スロー（`throw`）する場合、再スローされる例外型を `Throw:` に宣言しなければならない。
-
-**同型の再スロー:**
 
 ```csharp
-catch (IOException ex)
-{
-    LogError(ex);
-    throw;    // IOException を再スロー
-}
+// 例: ホスト言語上の制御流（契約外）
+throw new ValidationException("invalid input");
 ```
+
+この記述は「失敗しうる」ことの宣言ではなく、エラー構築・メッセージ書き込みという依存操作の上限を示す。
+
+### 8.3 `[kernel]` との関係
+
+`[kernel]` 関数内で生成された例外・パニックが外部環境へ漏れる可能性は、ホスト言語と実行基盤に依存する。
+DDC はこれを依存契約として完全には追跡しない。必要な場合は Middleware 層で捕捉し、`Call:` / `Write:` として正規化して扱うべきである。
 
 ```ddc
-Throw:
-    IOException
-Call:
-    LogError()
+// kernel 側（契約は空）
+[kernel]
+public void Send(byte[] bytes)();
+
+// middleware 側でエラー依存を正規化
+public void SafeSend(Packet packet)
+(
+    Read:
+        packet.Bytes[]
+    Call:
+        network.Send(),
+        ::Exception.Constructor()
+    Write:
+        ::Exception.Message
+);
 ```
-
-**変換スロー（ラップして別型として throw）:**
-
-```csharp
-catch (SqlException ex)
-{
-    throw new RepositoryException(ex);    // 変換スロー
-}
-```
-
-```ddc
-Throw:
-    RepositoryException    // 変換後の型を宣言する
-// SqlException は Call: chain に含まれるため Throw: への記述は不要
-```
-
-**catch して握り潰す場合（rethrow なし）:**
-
-```csharp
-catch (IOException ex)
-{
-    LogError(ex);
-    // throw しない
-}
-```
-
-この場合、`IOException` を `Throw:` に宣言する必要はない。ただし `LogError()` の呼び出しは `Call:` に記述しなければならない。
-
-### 8.5 エラーとなるケース
-
-| ケース | 例 |
-| --- | --- |
-| 宣言なしの例外生成 | `Throw:` 未宣言の `new ValidationException()` を throw |
-| 呼び出し先例外の `Throw:` 宣言 | `connection.Query()` のみが throw する `SqlException` を `Throw:` に記述 |
 
 ---
 
@@ -1036,11 +981,9 @@ $$\text{effective.Read}(f) = \text{declared.Read}(f) \cup \bigcup_{\substack{g \
 
 $$\text{effective.Write}(f) = \text{declared.Write}(f) \cup \bigcup_{\substack{g \in \text{Call}(f) \\ g \notin K}} \text{effective.Write}(g)$$
 
-$$\text{effective.Throw}(f) = \text{declared.Throw}(f) \cup \bigcup_{g \in \text{Call}(f)} \text{effective.Throw}(g)$$
-
 $$\text{effective.Call}(f) = \text{declared.Call}(f) \cup \bigcup_{g \in \text{Call}(f)} \text{effective.Call}(g)$$
 
-$g \in K$ に対しては `Call:` セクションが存在しないため $\text{effective.Throw}(g) = \text{declared.Throw}(g)$ が成立する。ここで $\text{Call}(f)$ は $f$ の `Call:` セクションに宣言された関数の集合を示す。
+ここで $\text{Call}(f)$ は $f$ の `Call:` セクションに宣言された関数の集合を示す。
 
 ### 10.2 例: 実効契約の計算
 
@@ -1064,8 +1007,6 @@ public void ProcessShipping(Order order)
         order.Status
     Call:
         outerRepository.GetSomeData()
-    Throw:
-        IOException
 );
 ```
 
@@ -1076,7 +1017,6 @@ public void ProcessShipping(Order order)
 | Read | `order.Id`、`order.Items[].SKU`、`repository.ConnectionString` |
 | Write | `order.Status`、`cache.Entry` |
 | Call | `outerRepository.GetSomeData()` |
-| Throw | `IOException` |
 
 ### 10.3 Call Reachability
 
@@ -1223,17 +1163,14 @@ Kernel Layer の関数は `[kernel]` アノテーションによって宣言さ�
 ```ddc
 [kernel]
 public void Send(byte[] bytes)
-(
-    Throw:
-        NetworkDisconnectedException
-);
+();
 ```
 
 特徴:
 
 - `[kernel]` アノテーションが付与されており、DDC 検証スコープ境界を形成する
 - `Read:` / `Write:` セクションを持たない（宣言してはならない）
-- `Throw:` に OS・ハードウェア起因の例外が含まれる
+- エラー経路（throw/panic）の挙動はホスト言語・実行基盤に委譲される
 - 呼び出しは通常の `Call:` で表現する
 - 言語実装・コアライブラリのみが `[kernel]` を宣言できる（§12.6 参照）
 
@@ -1307,17 +1244,12 @@ DDC 契約を検査することで、層間の違反を静的に検出できる�
 | `Read:` 宣言禁止 | `[kernel]` 関数に `Read:` セクションを記述してはならない |
 | `Write:` 宣言禁止 | `[kernel]` 関数に `Write:` セクションを記述してはならない |
 | `Call:` 宣言禁止 | `[kernel]` 関数に `Call:` セクションを記述してはならない |
-| `Throw:` 宣言可 | OS・ハードウェア起因の例外型を宣言できる |
 
 ```ddc
-// ok: [kernel] 関数の契約は Throw: のみ
+// ok: [kernel] 関数の契約は空ブロック
 [kernel]
 public void WriteBlock(byte[] data, long offset)
-(
-    Throw:
-        IOException
-        DeviceNotFoundException
-);
+();
 
 // NG: [kernel] 関数に Read: / Write: は宣言できない
 [kernel]
@@ -1338,7 +1270,6 @@ public void WriteBlock(byte[] data, long offset)
 | --- | --- |
 | `effective.Read` | **伝播しない**（呼び出し元の `effective.Read` に加算されない） |
 | `effective.Write` | **伝播しない**（呼び出し元の `effective.Write` に加算されない） |
-| `effective.Throw` | **伝播する**（`declared.Throw` が呼び出し元へ折りたたまれる） |
 
 この設計により、Middleware Layer は `[kernel]` 関数を `Call:` しても自身の `effective.Write` が汚染されず、`readonly` 制約との矛盾が生じない。
 
@@ -1374,19 +1305,14 @@ public void WriteBlock(byte[] data, long offset)
 | `Read` | 宣言した関数自身の直接 Read | `effective.Read` が折り畳まれる | **伝播しない** |
 | `Write` | 宣言した関数自身の直接 Write | `effective.Write` が折り畳まれる | **伝播しない** |
 | `Call` | 宣言した関数自身の直接 Call | `effective.Call` が折り畳まれる（推移的閉包） | `effective.Call` が折り畳まれる（推移的閉包） |
-| `Throw` | 宣言した関数自身の throw site | `effective.Throw` が折り畳まれる | `declared.Throw` が折り畳まれる |
 
 ### 13.2 伝播の形式的定義
 
-$K$ を `[kernel]` 関数の全体集合とし（§10.1、§12.6 参照）、セクション $s \in \{\text{Read}, \text{Write}, \text{Call}, \text{Throw}\}$ について定義する。
+$K$ を `[kernel]` 関数の全体集合とし（§10.1、§12.6 参照）、セクション $s \in \{\text{Read}, \text{Write}, \text{Call}\}$ について定義する。
 
 $s \in \{\text{Read}, \text{Write}\}$ の場合（`[kernel]` から伝播しない）:
 
 $$\text{effective}_s(f) = \text{declared}_s(f) \cup \bigcup_{\substack{g \in \text{Call}(f) \\ g \notin K}} \text{effective}_s(g)$$
-
-$s = \text{Throw}$ の場合（`[kernel]` の `declared.Throw` のみ伝播する）:
-
-$$\text{effective}_{\text{Throw}}(f) = \text{declared}_{\text{Throw}}(f) \cup \bigcup_{g \in \text{Call}(f)} \text{effective}_{\text{Throw}}(g)$$
 
 $s = \text{Call}$ の場合（すべての呼び出しが推移的に展開される）:
 
@@ -1407,17 +1333,10 @@ C.Write: database.Records[]
 
 A は `database.Records[]` への Write capability を保持する（C を通じた推移的伝播）。
 
-### 13.4 Throw の伝播
+### 13.4 エラー経路に関する補足
 
-```text
-A → B → C
-C.Throw: SQLException
-
-→ effective.Throw(B) ∋ SQLException
-→ effective.Throw(A) ∋ SQLException
-```
-
-`A` は `SQLException` の伝播経路上に存在する。`A` が `SQLException` を処理するかどうかは実装の問題であり、DDC は処理の強制はしない。ただし `A` の実効契約には `SQLException` が含まれるため、`A` の呼び出し元は `SQLException` の伝播を把握できる。
+エラー経路（`throw` / `panic`）は制御流表現として扱い、DDC の実効契約の合成対象には含めない。
+エラー依存を記述する必要がある場合は、`Call: ::Exception.Constructor()` や `Write: ::Exception.Message` のように依存操作として宣言する。
 
 ---
 
@@ -1517,7 +1436,7 @@ public void ProcessShipping(Order order)
 
 - **到達可能性解析**: 関数から直接参照されるフィールド・メソッドの列挙
 - **エイリアス解析**: ローカル変数を通じた間接参照の追跡
-- **例外フロー解析**: `throw` サイトの特定と例外型の推定
+- **エラー経路解析**: `throw` / `panic` などの制御流離脱パターンの把握
 
 **トレードオフ:**
 
