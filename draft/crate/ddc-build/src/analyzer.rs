@@ -54,6 +54,7 @@ impl BodyAnalyzer {
         let mut visitor = BodyVisitor {
             func_id: &func.id,
             is_kernel,
+            return_type_root: root_type_ident(&func.sig.return_type),
             declared_reads,
             declared_var_writes,
             declared_type_writes,
@@ -85,6 +86,19 @@ fn normalize_path(path: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(".")
+}
+
+fn root_type_ident(type_name: &str) -> Option<String> {
+    let trimmed = type_name.trim();
+    if trimmed.is_empty() || trimmed == "void" {
+        return None;
+    }
+    let root = trimmed
+        .split(['<', ':', '.', ' ', ','])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if root.is_empty() { None } else { Some(root.to_string()) }
 }
 
 /// syn の Expr からドット区切りフィールドパスを再構築する。
@@ -122,6 +136,7 @@ fn is_covered(path: &str, declared: &HashSet<String>) -> bool {
 struct BodyVisitor<'a> {
     func_id:              &'a FunctionId,
     is_kernel:            bool,
+    return_type_root:     Option<String>,
     declared_reads:       HashSet<String>,
     declared_var_writes:  HashSet<String>,
     declared_type_writes: HashSet<(String, String)>,
@@ -199,13 +214,43 @@ impl<'a, 'ast> Visit<'ast> for BodyVisitor<'a> {
     // ── 直接関数呼び出し ─────────────────────────────────────────────────────
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(p) = node.func.as_ref() {
-            if p.path.segments.len() == 1 {
-                let name = p.path.segments[0].ident.to_string();
-                // alias 呼び出し（codegen 生成クロージャ）と宣言済み呼び出しは除外
-                if !self.alias_names.contains(&name) && !self.declared_calls.contains(&name) {
+            let segments: Vec<String> = p.path.segments.iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+            if !segments.is_empty() {
+                let dotted = segments.join(".");
+
+                // コンストラクタ相当呼び出し:
+                // - Type::new(...)        => Type.Constructor
+                // - Type(...) (tuple等)   => Type.Constructor
+                let constructor_candidate = if segments.last().map(|s| s == "new").unwrap_or(false) && segments.len() >= 2 {
+                    let owner_leaf = &segments[segments.len() - 2];
+                    if self.return_type_root.as_ref().map(|rt| rt == owner_leaf).unwrap_or(false) {
+                        Some(format!("{}.Constructor", segments[..segments.len() - 1].join(".")))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let is_declared = if segments.len() == 1 {
+                    // 既存仕様: 単純呼び出しのみ Call: を照合
+                    self.alias_names.contains(&dotted) || self.declared_calls.contains(&dotted)
+                } else if let Some(constructor) = constructor_candidate.as_ref() {
+                    // 追加仕様: 戻り値型を構築する Type::new(...) は *.Constructor 宣言を要求
+                    self.declared_calls.contains(constructor)
+                        || self.declared_calls.contains(&format!("::{}", constructor))
+                } else {
+                    // issue 対応の最小変更として、従来未検証だった多段パス呼び出しは現状維持
+                    true
+                };
+
+                if !is_declared {
+                    let shown = constructor_candidate.unwrap_or(dotted);
                     self.push_error(
                         ValidationErrorKind::BodyUndeclaredCall,
-                        format!("未宣言関数の呼び出し: '{}'", name),
+                        format!("未宣言関数の呼び出し: '{}'", shown),
                     );
                 }
             }
@@ -349,6 +394,39 @@ mod tests {
         let errors = BodyAnalyzer::validate(&f);
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
+    }
+
+    #[test]
+    fn constructor_call_requires_declared_constructor() {
+        // 宣言なし: Query::new() は Query.Constructor の未宣言呼び出しとして扱う
+        let mut f = make_fn(
+            "f",
+            DeclaredContract::default(),
+            "{ let _q = Query::new(connection); }",
+            false,
+        );
+        f.sig.return_type = "Query".into();
+        let errors = BodyAnalyzer::validate(&f);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
+        assert!(errors[0].message.contains("Query.Constructor"));
+    }
+
+    #[test]
+    fn constructor_call_ok_when_declared() {
+        // 宣言あり: Query::new() に対して Query.Constructor を許可
+        let mut f = make_fn(
+            "f",
+            DeclaredContract {
+                call: vec![FunctionId("Query.Constructor".into())],
+                ..Default::default()
+            },
+            "{ let _q = Query::new(connection); }",
+            false,
+        );
+        f.sig.return_type = "Query".into();
+        let errors = BodyAnalyzer::validate(&f);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     }
 
     // ── BodyUnsafeBlock ───────────────────────────────────────────────────────
