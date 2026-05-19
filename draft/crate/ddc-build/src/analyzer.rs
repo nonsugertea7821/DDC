@@ -54,7 +54,6 @@ impl BodyAnalyzer {
         let mut visitor = BodyVisitor {
             func_id: &func.id,
             is_kernel,
-            return_type_root: root_type_ident(&func.sig.return_type),
             declared_reads,
             declared_var_writes,
             declared_type_writes,
@@ -86,19 +85,6 @@ fn normalize_path(path: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(".")
-}
-
-fn root_type_ident(type_name: &str) -> Option<String> {
-    let trimmed = type_name.trim();
-    if trimmed.is_empty() || trimmed == "void" {
-        return None;
-    }
-    let root = trimmed
-        .split(['<', ':', '.', ' ', ','])
-        .next()
-        .unwrap_or_default()
-        .trim();
-    if root.is_empty() { None } else { Some(root.to_string()) }
 }
 
 /// syn の Expr からドット区切りフィールドパスを再構築する。
@@ -136,7 +122,6 @@ fn is_covered(path: &str, declared: &HashSet<String>) -> bool {
 struct BodyVisitor<'a> {
     func_id:              &'a FunctionId,
     is_kernel:            bool,
-    return_type_root:     Option<String>,
     declared_reads:       HashSet<String>,
     declared_var_writes:  HashSet<String>,
     declared_type_writes: HashSet<(String, String)>,
@@ -222,29 +207,23 @@ impl<'a, 'ast> Visit<'ast> for BodyVisitor<'a> {
 
                 // コンストラクタ相当呼び出し:
                 // - Type::new(...)        => Type.Constructor
-                // - Type(...) (tuple等)   => Type.Constructor
                 let is_new_method = segments.last().is_some_and(|s| s == "new");
                 let constructor_candidate = if is_new_method && segments.len() >= 2 {
-                    let owner_leaf = &segments[segments.len() - 2];
-                    if self.return_type_root.as_deref() == Some(owner_leaf.as_str()) {
-                        Some(format!("{}.Constructor", segments[..segments.len() - 1].join(".")))
-                    } else {
-                        None
-                    }
+                    Some(format!("{}.Constructor", segments[..segments.len() - 1].join(".")))
                 } else {
                     None
                 };
 
                 let is_declared = if segments.len() == 1 {
-                    // 既存仕様: 単純呼び出しのみ Call: を照合
+                    // 単純呼び出しは Call: と照合
                     self.alias_names.contains(&dotted) || self.declared_calls.contains(&dotted)
                 } else if let Some(constructor) = constructor_candidate.as_ref() {
-                    // 追加仕様: 戻り値型を構築する Type::new(...) は *.Constructor 宣言を要求
+                    // Type::new(...) は *.Constructor 宣言を要求
                     let rooted_constructor = format!("::{}", constructor);
                     self.declared_calls.contains(constructor)
                         || self.declared_calls.contains(&rooted_constructor)
                 } else {
-                    // issue 対応の最小変更として、従来未検証だった多段パス呼び出しは現状維持
+                    // 多段パス呼び出し（constructor 以外）は現在の検証対象外
                     true
                 };
 
@@ -401,13 +380,12 @@ mod tests {
     #[test]
     fn constructor_call_requires_declared_constructor() {
         // 宣言なし: Query::new() は Query.Constructor の未宣言呼び出しとして扱う
-        let mut f = make_fn(
+        let f = make_fn(
             "f",
             DeclaredContract::default(),
             "{ let _q = Query::new(connection); }",
             false,
         );
-        f.sig.return_type = "Query".into();
         let errors = BodyAnalyzer::validate(&f);
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
@@ -417,7 +395,7 @@ mod tests {
     #[test]
     fn constructor_call_ok_when_declared() {
         // 宣言あり: Query::new() に対して Query.Constructor を許可
-        let mut f = make_fn(
+        let f = make_fn(
             "f",
             DeclaredContract {
                 call: vec![FunctionId("Query.Constructor".into())],
@@ -426,7 +404,39 @@ mod tests {
             "{ let _q = Query::new(connection); }",
             false,
         );
-        f.sig.return_type = "Query".into();
+        let errors = BodyAnalyzer::validate(&f);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn constructor_call_requires_declared_constructor_even_if_not_return_value() {
+        let f = make_fn(
+            "f",
+            DeclaredContract {
+                write: vec![StructurePath("state.query".into())],
+                ..Default::default()
+            },
+            "{ state.query = Query::new(connection); }",
+            false,
+        );
+        let errors = BodyAnalyzer::validate(&f);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
+        assert!(errors[0].message.contains("Query.Constructor"));
+    }
+
+    #[test]
+    fn constructor_call_and_write_ok_when_both_declared() {
+        let f = make_fn(
+            "f",
+            DeclaredContract {
+                write: vec![StructurePath("state.query".into())],
+                call: vec![FunctionId("Query.Constructor".into())],
+                ..Default::default()
+            },
+            "{ state.query = Query::new(connection); }",
+            false,
+        );
         let errors = BodyAnalyzer::validate(&f);
         assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
     }
@@ -541,6 +551,7 @@ mod tests {
                     StructurePath("::Alarm.threshold_ms".into()),
                     StructurePath("::Alarm.fired".into()),
                 ],
+                call: vec![FunctionId("String.Constructor".into())],
                 ..Default::default()
             },
             "{ Alarm { label: String::new(), threshold_ms: 0, fired: false } }",
@@ -557,6 +568,7 @@ mod tests {
             "new_alarm",
             DeclaredContract {
                 write: vec![StructurePath("::Alarm.fired".into())],
+                call: vec![FunctionId("String.Constructor".into())],
                 ..Default::default()
             },
             "{ Alarm { label: String::new(), threshold_ms: 0, fired: false } }",
