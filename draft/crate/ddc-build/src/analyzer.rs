@@ -178,6 +178,18 @@ impl<'a, 'ast> Visit<'ast> for BodyVisitor<'a> {
         let type_name = node.path.segments.last()
             .map(|s| s.ident.to_string())
             .unwrap_or_default();
+        let constructor = format!("{}.Constructor", type_name);
+        let rooted_constructor = format!("::{}", constructor);
+
+        if !type_name.is_empty()
+            && !self.declared_calls.contains(&constructor)
+            && !self.declared_calls.contains(&rooted_constructor)
+        {
+            self.push_error(
+                ValidationErrorKind::BodyUndeclaredCall,
+                format!("未宣言関数の呼び出し: '{}'", constructor),
+            );
+        }
 
         // 明示的に初期化されたフィールドのみを検査（`..base` spread は除外）
         for field in &node.fields {
@@ -519,6 +531,7 @@ mod tests {
             "new_timer",
             DeclaredContract {
                 write: vec![StructurePath("::Timer.elapsed_ms".into())],
+                call: vec![FunctionId("Timer.Constructor".into())],
                 ..Default::default()
             },
             "{ Timer { elapsed_ms: 0 } }",
@@ -530,7 +543,7 @@ mod tests {
 
     #[test]
     fn struct_literal_type_level_write_undeclared() {
-        // Write: 宣言なし → struct リテラルの elapsed_ms 初期化 → BodyUndeclaredWrite
+        // Write/Call 宣言なし → struct リテラルの elapsed_ms 初期化 → BodyUndeclaredWrite + BodyUndeclaredCall
         let f = make_fn(
             "new_timer",
             DeclaredContract::default(),
@@ -538,8 +551,9 @@ mod tests {
             false,
         );
         let errors = BodyAnalyzer::validate(&f);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredWrite);
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().any(|e| e.kind == ValidationErrorKind::BodyUndeclaredWrite));
+        assert!(errors.iter().any(|e| e.kind == ValidationErrorKind::BodyUndeclaredCall));
     }
 
     #[test]
@@ -553,7 +567,10 @@ mod tests {
                     StructurePath("::Alarm.threshold_ms".into()),
                     StructurePath("::Alarm.fired".into()),
                 ],
-                call: vec![FunctionId("String.Constructor".into())],
+                call: vec![
+                    FunctionId("Alarm.Constructor".into()),
+                    FunctionId("String.Constructor".into()),
+                ],
                 ..Default::default()
             },
             "{ Alarm { label: String::new(), threshold_ms: 0, fired: false } }",
@@ -570,7 +587,10 @@ mod tests {
             "new_alarm",
             DeclaredContract {
                 write: vec![StructurePath("::Alarm.fired".into())],
-                call: vec![FunctionId("String.Constructor".into())],
+                call: vec![
+                    FunctionId("Alarm.Constructor".into()),
+                    FunctionId("String.Constructor".into()),
+                ],
                 ..Default::default()
             },
             "{ Alarm { label: String::new(), threshold_ms: 0, fired: false } }",
@@ -579,5 +599,22 @@ mod tests {
         let errors = BodyAnalyzer::validate(&f);
         assert_eq!(errors.len(), 2, "expected 2 errors for label + threshold_ms, got: {:?}", errors);
         assert!(errors.iter().all(|e| e.kind == ValidationErrorKind::BodyUndeclaredWrite));
+    }
+
+    #[test]
+    fn struct_literal_constructor_requires_call_declaration() {
+        let f = make_fn(
+            "new_timer",
+            DeclaredContract {
+                write: vec![StructurePath("::Timer.elapsed_ms".into())],
+                ..Default::default()
+            },
+            "{ Timer { elapsed_ms: 0 } }",
+            false,
+        );
+        let errors = BodyAnalyzer::validate(&f);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
+        assert!(errors[0].message.contains("Timer.Constructor"));
     }
 }
