@@ -223,9 +223,10 @@ impl<'a, 'ast> Visit<'ast> for BodyVisitor<'a> {
                 // コンストラクタ相当呼び出し:
                 // - Type::new(...)        => Type.Constructor
                 // - Type(...) (tuple等)   => Type.Constructor
-                let constructor_candidate = if segments.last().map(|s| s == "new").unwrap_or(false) && segments.len() >= 2 {
+                let is_new_method = segments.last().is_some_and(|s| s == "new");
+                let constructor_candidate = if is_new_method && segments.len() >= 2 {
                     let owner_leaf = &segments[segments.len() - 2];
-                    if self.return_type_root.as_ref().map(|rt| rt == owner_leaf).unwrap_or(false) {
+                    if self.return_type_root.as_deref() == Some(owner_leaf.as_str()) {
                         Some(format!("{}.Constructor", segments[..segments.len() - 1].join(".")))
                     } else {
                         None
@@ -239,18 +240,19 @@ impl<'a, 'ast> Visit<'ast> for BodyVisitor<'a> {
                     self.alias_names.contains(&dotted) || self.declared_calls.contains(&dotted)
                 } else if let Some(constructor) = constructor_candidate.as_ref() {
                     // 追加仕様: 戻り値型を構築する Type::new(...) は *.Constructor 宣言を要求
+                    let rooted_constructor = format!("::{}", constructor);
                     self.declared_calls.contains(constructor)
-                        || self.declared_calls.contains(&format!("::{}", constructor))
+                        || self.declared_calls.contains(&rooted_constructor)
                 } else {
                     // issue 対応の最小変更として、従来未検証だった多段パス呼び出しは現状維持
                     true
                 };
 
                 if !is_declared {
-                    let shown = constructor_candidate.unwrap_or(dotted);
+                    let displayed_call_name = constructor_candidate.unwrap_or(dotted);
                     self.push_error(
                         ValidationErrorKind::BodyUndeclaredCall,
-                        format!("未宣言関数の呼び出し: '{}'", shown),
+                        format!("未宣言関数の呼び出し: '{}'", displayed_call_name),
                     );
                 }
             }
