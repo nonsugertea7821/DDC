@@ -178,6 +178,18 @@ impl<'a, 'ast> Visit<'ast> for BodyVisitor<'a> {
         let type_name = node.path.segments.last()
             .map(|s| s.ident.to_string())
             .unwrap_or_default();
+        let constructor = format!("{}.Constructor", type_name);
+        let rooted_constructor = format!("::{}", constructor);
+
+        if !type_name.is_empty()
+            && !self.declared_calls.contains(&constructor)
+            && !self.declared_calls.contains(&rooted_constructor)
+        {
+            self.push_error(
+                ValidationErrorKind::BodyUndeclaredCall,
+                format!("未宣言関数の呼び出し: '{}'", constructor),
+            );
+        }
 
         // 明示的に初期化されたフィールドのみを検査（`..base` spread は除外）
         for field in &node.fields {
@@ -199,13 +211,41 @@ impl<'a, 'ast> Visit<'ast> for BodyVisitor<'a> {
     // ── 直接関数呼び出し ─────────────────────────────────────────────────────
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let syn::Expr::Path(p) = node.func.as_ref() {
-            if p.path.segments.len() == 1 {
-                let name = p.path.segments[0].ident.to_string();
-                // alias 呼び出し（codegen 生成クロージャ）と宣言済み呼び出しは除外
-                if !self.alias_names.contains(&name) && !self.declared_calls.contains(&name) {
+            let segments: Vec<String> = p.path.segments.iter()
+                .map(|s| s.ident.to_string())
+                .collect();
+            if !segments.is_empty() {
+                let dotted = segments.join(".");
+
+                // コンストラクタ相当呼び出し:
+                // - Type::new(...)        => Type.Constructor
+                // - Type(...) 形式は現行の body 記法では想定しないため対象外
+                let is_new_method = segments.last().is_some_and(|s| s == "new");
+                let constructor_candidate = if is_new_method && segments.len() >= 2 {
+                    let owner_segments_end = segments.len() - 1;
+                    Some(format!("{}.Constructor", segments[..owner_segments_end].join(".")))
+                } else {
+                    None
+                };
+
+                let is_declared = if segments.len() == 1 {
+                    // 単純呼び出しは Call: と照合
+                    self.alias_names.contains(&dotted) || self.declared_calls.contains(&dotted)
+                } else if let Some(constructor) = constructor_candidate.as_ref() {
+                    // Type::new(...) は *.Constructor 宣言を要求
+                    let rooted_constructor = format!("::{}", constructor);
+                    self.declared_calls.contains(constructor)
+                        || self.declared_calls.contains(&rooted_constructor)
+                } else {
+                    // 多段パス呼び出し（constructor 以外）は現在の検証対象外
+                    true
+                };
+
+                if !is_declared {
+                    let displayed_call_name = constructor_candidate.unwrap_or(dotted);
                     self.push_error(
                         ValidationErrorKind::BodyUndeclaredCall,
-                        format!("未宣言関数の呼び出し: '{}'", name),
+                        format!("未宣言関数の呼び出し: '{}'", displayed_call_name),
                     );
                 }
             }
@@ -351,6 +391,70 @@ mod tests {
         assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
     }
 
+    #[test]
+    fn constructor_call_requires_declared_constructor() {
+        // 宣言なし: Query::new() は Query.Constructor の未宣言呼び出しとして扱う
+        let f = make_fn(
+            "f",
+            DeclaredContract::default(),
+            "{ let _q = Query::new(connection); }",
+            false,
+        );
+        let errors = BodyAnalyzer::validate(&f);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
+        assert!(errors[0].message.contains("Query.Constructor"));
+    }
+
+    #[test]
+    fn constructor_call_ok_when_declared() {
+        // 宣言あり: Query::new() に対して Query.Constructor を許可
+        let f = make_fn(
+            "f",
+            DeclaredContract {
+                call: vec![FunctionId("Query.Constructor".into())],
+                ..Default::default()
+            },
+            "{ let _q = Query::new(connection); }",
+            false,
+        );
+        let errors = BodyAnalyzer::validate(&f);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
+    #[test]
+    fn constructor_call_requires_declared_constructor_even_if_not_return_value() {
+        let f = make_fn(
+            "f",
+            DeclaredContract {
+                write: vec![StructurePath("state.query".into())],
+                ..Default::default()
+            },
+            "{ state.query = Query::new(connection); }",
+            false,
+        );
+        let errors = BodyAnalyzer::validate(&f);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
+        assert!(errors[0].message.contains("Query.Constructor"));
+    }
+
+    #[test]
+    fn constructor_call_and_write_ok_when_both_declared() {
+        let f = make_fn(
+            "f",
+            DeclaredContract {
+                write: vec![StructurePath("state.query".into())],
+                call: vec![FunctionId("Query.Constructor".into())],
+                ..Default::default()
+            },
+            "{ state.query = Query::new(connection); }",
+            false,
+        );
+        let errors = BodyAnalyzer::validate(&f);
+        assert!(errors.is_empty(), "unexpected errors: {:?}", errors);
+    }
+
     // ── BodyUnsafeBlock ───────────────────────────────────────────────────────
 
     #[test]
@@ -427,6 +531,7 @@ mod tests {
             "new_timer",
             DeclaredContract {
                 write: vec![StructurePath("::Timer.elapsed_ms".into())],
+                call: vec![FunctionId("Timer.Constructor".into())],
                 ..Default::default()
             },
             "{ Timer { elapsed_ms: 0 } }",
@@ -438,7 +543,7 @@ mod tests {
 
     #[test]
     fn struct_literal_type_level_write_undeclared() {
-        // Write: 宣言なし → struct リテラルの elapsed_ms 初期化 → BodyUndeclaredWrite
+        // Write/Call 宣言なし → struct リテラルの elapsed_ms 初期化 → BodyUndeclaredWrite + BodyUndeclaredCall
         let f = make_fn(
             "new_timer",
             DeclaredContract::default(),
@@ -446,8 +551,9 @@ mod tests {
             false,
         );
         let errors = BodyAnalyzer::validate(&f);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredWrite);
+        assert_eq!(errors.len(), 2);
+        assert!(errors.iter().any(|e| e.kind == ValidationErrorKind::BodyUndeclaredWrite));
+        assert!(errors.iter().any(|e| e.kind == ValidationErrorKind::BodyUndeclaredCall));
     }
 
     #[test]
@@ -460,6 +566,10 @@ mod tests {
                     StructurePath("::Alarm.label".into()),
                     StructurePath("::Alarm.threshold_ms".into()),
                     StructurePath("::Alarm.fired".into()),
+                ],
+                call: vec![
+                    FunctionId("Alarm.Constructor".into()),
+                    FunctionId("String.Constructor".into()),
                 ],
                 ..Default::default()
             },
@@ -477,6 +587,10 @@ mod tests {
             "new_alarm",
             DeclaredContract {
                 write: vec![StructurePath("::Alarm.fired".into())],
+                call: vec![
+                    FunctionId("Alarm.Constructor".into()),
+                    FunctionId("String.Constructor".into()),
+                ],
                 ..Default::default()
             },
             "{ Alarm { label: String::new(), threshold_ms: 0, fired: false } }",
@@ -485,5 +599,22 @@ mod tests {
         let errors = BodyAnalyzer::validate(&f);
         assert_eq!(errors.len(), 2, "expected 2 errors for label + threshold_ms, got: {:?}", errors);
         assert!(errors.iter().all(|e| e.kind == ValidationErrorKind::BodyUndeclaredWrite));
+    }
+
+    #[test]
+    fn struct_literal_constructor_requires_call_declaration() {
+        let f = make_fn(
+            "new_timer",
+            DeclaredContract {
+                write: vec![StructurePath("::Timer.elapsed_ms".into())],
+                ..Default::default()
+            },
+            "{ Timer { elapsed_ms: 0 } }",
+            false,
+        );
+        let errors = BodyAnalyzer::validate(&f);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].kind, ValidationErrorKind::BodyUndeclaredCall);
+        assert!(errors[0].message.contains("Timer.Constructor"));
     }
 }
