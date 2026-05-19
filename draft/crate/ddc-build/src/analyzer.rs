@@ -207,9 +207,11 @@ impl<'a, 'ast> Visit<'ast> for BodyVisitor<'a> {
 
                 // コンストラクタ相当呼び出し:
                 // - Type::new(...)        => Type.Constructor
+                // - Type(...) 形式は現行の body 記法では想定しないため対象外
                 let is_new_method = segments.last().is_some_and(|s| s == "new");
                 let constructor_candidate = if is_new_method && segments.len() >= 2 {
-                    Some(format!("{}.Constructor", segments[..segments.len() - 1].join(".")))
+                    let owner_segments_end = segments.len() - 1;
+                    Some(format!("{}.Constructor", segments[..owner_segments_end].join(".")))
                 } else {
                     None
                 };
